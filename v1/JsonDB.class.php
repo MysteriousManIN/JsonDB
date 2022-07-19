@@ -88,7 +88,7 @@
 
         }
 
-        // return all columns
+        // where clause
         private function where(array $where, string $table_name, string $cols): array{
 
             [ $col_name, $col_value, $operator ] = $where;
