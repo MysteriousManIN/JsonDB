@@ -56,9 +56,19 @@
             if(count($this->db_data) === 0) $json = "{}";
             else $json = json_encode($this->db_data, JSON_PRETTY_PRINT);
 
-            $res = file_put_contents($this->db_name, $json);
+            $db_data_size = strlen($json);
 
-            return $res ? true : false;
+            // when size is out of limits
+            if(!($db_data_size >= $this->db_limits["db_size"]["min"] && $db_data_size <= $this->db_limits["db_size"]["max"])){
+                if($this->old_db_data !== null) $this->db_data = $this->old_db_data;
+                return false;
+            }
+
+            $res = file_put_contents($this->db_name, $json) ? true : false;
+
+            if($res) $this->old_db_data = $this->db_data;
+
+            return $res;
 
         }
 
@@ -199,6 +209,10 @@
         // create a table into jsondb
         public function create_table(string $table_name, array $table_struct, bool $if_not_exists = false): bool{
 
+            $num_of_table = count($this->db_data) + 1;
+            if(!($num_of_table >= $this->db_limits["num_of_table"]["min"] && $num_of_table <= $this->db_limits["num_of_table"]["max"]))
+            throw new \Error("Number of tables are out of limits into '$this->db_name' jsondb");
+
             if(isset($this->db_data[$table_name])){
                 if($if_not_exists) return true;
                 else throw new \Error("'$table_name' table already exists into '$this->db_name' jsondb");
@@ -208,6 +222,11 @@
             throw new \Error("'columns' is not set in '$table_name' table's structure");
 
             $columns = $table_struct["columns"];
+
+            $num_of_cols = count($columns);
+            if(!($num_of_cols >= $this->db_limits["table_limits"]["cols"]["min"] && $num_of_cols <= $this->db_limits["table_limits"]["cols"]["max"]))
+            throw new \Error("Number of columns into '$table_name' table are out of limits into '$this->db_name' jsondb");
+
             foreach($columns as $col_idx => $col){
 
                 foreach($this->column_properties as $property){
@@ -223,6 +242,10 @@
 
                                 if($datatype !== "string")
                                 throw new \Error("Datatype of value of '$property' property of column is not 'string' of '$table_name' table's column at index $col_idx");
+
+                                $col_name_len = strlen($col["name"]);
+                                if(!($col_name_len >= $this->db_limits["table_limits"]["col_name"]["min"] && $col_name_len <= $this->db_limits["table_limits"]["col_name"]["max"]))
+                                throw new \Error("Length of column name at index $col_idx into '$table_name' tables is out of limits");
 
                             } break;
 
@@ -240,6 +263,12 @@
 
                                 if($col["datatype"] !== $datatype)
                                 throw new \Error("Datatype of value of 'default' property is not matching with value of 'datatype' property of '$table_name' table's column at index $col_idx");
+
+                                if($datatype === "string"){
+                                    $default_val_len = strlen($col["default"]);
+                                    if(!($default_val_len >= $this->db_limits["datatype"]["string"]["min"] && $default_val_len <= $this->db_limits["datatype"]["string"]["max"]))
+                                    throw new \Error("Length of default value at index $col_idx into '$table_name' tables is out of limits");
+                                }
 
                             } break;
 
@@ -342,8 +371,8 @@
 
         }
 
-        // create a row into a table 
-        public function insert_into(string $table_name, array $row): bool{
+        // create a row into a table, ($bulk === true) for insert multiple rows at a time 
+        public function insert_into(string $table_name, array $row, bool $bulk = false): bool{
 
             if(!isset($this->db_data[$table_name]))
             throw new \Error("'$table_name' table does not exists in '$this->db_name' jsondb");
@@ -368,67 +397,92 @@
 
             $exists_rows = $this->db_data[$table_name]["rows"];
 
-            foreach($row as $col_name => $value){
+            if($bulk){ 
 
-                $pos = array_search($col_name, $required_cols);
-                if($pos !== false){
+                if($this->check_datatype($row) !== "array")
+                throw new \Error("Datatype of 'row' paramter is not indexed array for insert multiple rows at a time into '$table_name' table");
 
-                    $datatype = $this->db_data[$table_name]["structure"]["columns"][$pos]["datatype"];
-                    if($datatype !== $this->check_datatype($value))
-                    throw new \Error("Wrong datatype of value of '$col_name' column into row of '$table_name' table");
+                $rows = $row;
 
-                    if(in_array($col_name, $unique_cols)){
+            }else $rows = array( $row );
 
-                        $unique_values = array();
-                        foreach($exists_rows as $er){
-                            array_push($unique_values, $er[$col_name]);
+            $size_of_rows = count($exists_rows) + count($rows);
+            if(!($size_of_rows >= $this->db_limits["table_limits"]["rows"]["min"] && $size_of_rows <= $this->db_limits["table_limits"]["rows"]["max"]))
+            throw new \Error("Number of rows into '$table_name' table are out of limits into '$this->db_name' jsondb");
+
+            foreach($rows as $row_idx => $row){
+
+                foreach($row as $col_name => $value){
+
+                    $pos = array_search($col_name, $required_cols);
+                    if($pos !== false){
+    
+                        $datatype = $this->db_data[$table_name]["structure"]["columns"][$pos]["datatype"];
+                        $value_datatype = $this->check_datatype($value);
+    
+                        if($datatype !== $value_datatype)
+                        throw new \Error("Wrong datatype of value of '$col_name' column into row of '$table_name' table");
+    
+                        if($value_datatype === "string"){
+                            $val_len = strlen($value);
+                            if(!($val_len >= $this->db_limits["datatype"]["string"]["min"] && $val_len <= $this->db_limits["datatype"]["string"]["max"]))
+                            throw new \Error("Length of value of '$col_name' column at index $row_idx into '$table_name' tables is out of limits");
                         }
-
-                        if(in_array($value, $unique_values))
-                        throw new \Error("Duplicate entry at '$col_name' column of '$table_name' table");
-
-                        $dummy_row[$col_name] = $value;
-
-                    }else if(in_array($col_name, $auto_increment_cols)){
-
+                        
+                        if(in_array($col_name, $unique_cols)){
+    
+                            $unique_values = array();
+                            foreach($exists_rows as $er){
+                                array_push($unique_values, $er[$col_name]);
+                            }
+    
+                            if(in_array($value, $unique_values))
+                            throw new \Error("Duplicate entry at '$col_name' column of '$table_name' table");
+    
+                            $dummy_row[$col_name] = $value;
+    
+                        }else if(in_array($col_name, $auto_increment_cols)){
+    
+                            $exists_rows_size = count($exists_rows);
+                            if($exists_rows_size === 0) $dummy_row[$col_name] = 1;
+                            else $dummy_row[$col_name] = $exists_rows[$exists_rows_size - 1][$col_name] + 1;
+    
+                        }else{
+    
+                            $dummy_row[$col_name] = $value;
+    
+                        }
+    
+                    }else throw new \Error("Invalid '$col_name' column into row of '$table_name' table");
+    
+                }
+    
+                // fill auto_increment column's value and default value
+                foreach($dummy_row as $col_name => $value){
+    
+                    if(in_array($col_name, $auto_increment_cols)){ // for auto_increment
+    
                         $exists_rows_size = count($exists_rows);
                         if($exists_rows_size === 0) $dummy_row[$col_name] = 1;
                         else $dummy_row[$col_name] = $exists_rows[$exists_rows_size - 1][$col_name] + 1;
-
-                    }else{
-
-                        $dummy_row[$col_name] = $value;
-
+    
                     }
-
-                }else throw new \Error("Invalid '$col_name' column into row of '$table_name' table");
+    
+                    // default value
+                    $pos = array_search($col_name, $required_cols);
+                    if($pos !== false){
+    
+                        $default_value = $this->db_data[$table_name]["structure"]["columns"][$pos]["default"];
+                        if($dummy_row[$col_name] === null) $dummy_row[$col_name] = $default_value;
+    
+                    }
+    
+                }
+    
+                $row = $dummy_row;
+                array_push($this->db_data[$table_name]["rows"], $row);
 
             }
-
-            // fill auto_increment column's value and default value
-            foreach($dummy_row as $col_name => $value){
-
-                if(in_array($col_name, $auto_increment_cols)){ // for auto_increment
-
-                    $exists_rows_size = count($exists_rows);
-                    if($exists_rows_size === 0) $dummy_row[$col_name] = 1;
-                    else $dummy_row[$col_name] = $exists_rows[$exists_rows_size - 1][$col_name] + 1;
-
-                }
-
-                // default value
-                $pos = array_search($col_name, $required_cols);
-                if($pos !== false){
-
-                    $default_value = $this->db_data[$table_name]["structure"]["columns"][$pos]["default"];
-                    if($dummy_row[$col_name] === null) $dummy_row[$col_name] = $default_value;
-
-                }
-
-            }
-
-            $row = $dummy_row;
-            array_push($this->db_data[$table_name]["rows"], $row);
             
             return $this->write_into_db();
 
@@ -487,6 +541,13 @@
 
         }
 
+        // get jsondb size in bytes
+        public function db_size(): int{
+
+            return filesize($this->db_name);
+
+        }
+
     }
 
     trait update{
@@ -497,6 +558,7 @@
             $exists_rows = $this->db_data[$table_name]["rows"];
             $rows = $this->select_from($table_name, "*", $where);
 
+            // when table is empty
             if(count($rows) === 0) return true;
 
             $dr_uc_nnc_aic = $this->dr_uc_nnc_aic($table_name);
@@ -510,9 +572,17 @@
                 throw new \Error("'$col_name' column does not exists in '$table_name' table");
 
                 $datatype = $this->check_datatype($rows[0][$col_name]);
-                if($col_value !== null && $datatype !== $this->check_datatype($col_value))
+                $val_datatype = $this->check_datatype($col_value);
+
+                if($col_value !== null && $datatype !== $val_datatype)
                 throw new \Error("Wrong datatype of '$col_name' column's value of '$table_name' table");
 
+                if($val_datatype === "string"){ 
+                    $val_len = strlen($col_value);
+                    if(!($val_len >= $this->db_limits["datatype"]["string"]["min"] && $val_len <= $this->db_limits["datatype"]["string"]["max"]))
+                    throw new \Error("Length of value of '$col_name' column into '$table_name' tables is out of limits");
+                }
+                
                 if(in_array($col_name, $not_null_cols)){
                     if($col_value === null)
                     throw new \Error("Datatype of '$col_name' column's value can not be null");
@@ -641,6 +711,18 @@
         private $valid_datatype = array( "string", "number", "boolean", "object", "array", "null" );
         private $column_properties = array( "name", "datatype", "default", "unique", "not_null", "auto_increment" );
         private $where_clause_operators = array( "=", ">", "<", ">=", "<=", "!=" );
+        private $db_limits = array(
+            "db_size" => array( "min"=> 2, "max"=> 10*1024*1024 ), // max = 10MB
+            "num_of_table"=> array( "min"=> 0, "max"=> 4 ),
+            "table_limits"=> array(
+                "rows"=> array( "min"=> 0, "max"=> 1024 ),
+                "cols"=> array( "min"=> 1, "max"=> 1024 ),
+                "col_name"=> array( "min"=> 1, "max"=> 32 ),
+            ),
+            "datatype"=> array(
+                "string"=> array( "min"=>0, "max"=> 2048 )
+            )
+        );
 
         function __construct(string $db_name = ""){
 
@@ -656,6 +738,10 @@
         public function connect_db(string $db_name){
 
             if(is_file($db_name)){
+
+                $db_size = filesize($db_name);
+                if(!($db_size >= $this->db_limits["db_size"]["min"] && $db_size <= $this->db_limits["db_size"]["max"]))
+                throw new \Error("'$db_name' jsondb's size is out limits");
 
                 $this->db_name = $db_name;
 
