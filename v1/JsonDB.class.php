@@ -51,7 +51,7 @@
 
         }
 
-        private function write_into_db(): bool{
+        private function write_into_db(): int{
 
             if(count($this->db_data) === 0) $json = "{}";
             else $json = json_encode($this->db_data, JSON_PRETTY_PRINT);
@@ -60,13 +60,13 @@
 
             // when size is out of limits
             if(!($db_data_size >= $this->db_limits["db_size"]["min"] && $db_data_size <= $this->db_limits["db_size"]["max"])){
-                if($this->old_db_data !== null) $this->db_data = $this->old_db_data;
-                return false;
+                $this->db_data = $this->db_data_clone;
+                return -1;
             }
 
-            $res = file_put_contents($this->db_name, $json) ? true : false;
+            $res = file_put_contents($this->db_name, $json) ? 1 : 0;
 
-            if($res) $this->old_db_data = $this->db_data;
+            if($res === 1) $this->db_data_clone = $this->db_data;
 
             return $res;
 
@@ -77,10 +77,10 @@
 
             $columns = $this->db_data[$table_name]["structure"]["columns"];
 
-            $dummy_row = array();
-            $unique_cols = array();
-            $not_null_cols = array();
-            $auto_increment_cols = array();
+            $dummy_row = [];
+            $unique_cols = [];
+            $not_null_cols = [];
+            $auto_increment_cols = [];
 
             foreach($columns as $col){
                 $dummy_row[$col["name"]] = null;
@@ -98,22 +98,35 @@
 
         }
 
+        private function get_col_name_with_dt(string $table_name): array{
+
+            $exists_columns = $this->db_data[$table_name]["structure"]["columns"];
+
+            $col_name_datatype = [];
+            foreach($exists_columns as $col_idx => $col) $col_name_datatype[$col["name"]] = $col["datatype"];
+
+            return $col_name_datatype;
+
+        }
+
         // where clause
         private function where(array $where, string $table_name, string $cols): array{
 
             [ $col_name, $col_value, $operator ] = $where;
 
             $exists_rows = $this->db_data[$table_name]["rows"];
+            $col_name_datatype = $this->get_col_name_with_dt($table_name);
+            
+            if(in_array($col_name, array_keys($col_name_datatype))){
 
-            if(!isset($exists_rows[0][$col_name]))
-            throw new \Error("'$col_name' column does not exists in '$table_name' table");
+                $datatype = $col_name_datatype[$col_name];
+                if($datatype !== $this->check_datatype($col_value))
+                throw new \Error("Wrong datatype of '$col_name' column's value in where clause");
 
-            $datatype = $this->check_datatype($exists_rows[0][$col_name]);
-            if($datatype !== $this->check_datatype($col_value))
-            throw new \Error("Wrong datatype of '$col_name' column's value in where clause");
+            }else throw new \Error("'$col_name' column does not exists in '$table_name' table");
 
             $unique_cols = $this->dr_uc_nnc_aic($table_name)["unique_cols"];
-            $rows = array();
+            $rows = [];
 
             $times = false;
             if($operator === "="){
@@ -129,7 +142,7 @@
         private function search_into_table(array $rows, string $col_name, $col_value, string $operator, string $cols, bool $times = false): array{
 
             $operator = in_array($operator, $this->where_clause_operators) ? $operator : "=";
-            $res_rows = array();
+            $res_rows = [];
 
             foreach($rows as $row_idx => $row){
                 if(isset($row[$col_name])){
@@ -148,13 +161,13 @@
 
                     if($c){
 
-                        if($cols === "*") array_push($res_rows, $row);
+                        if($cols === "*") $res_rows[$row_idx] = $row;
                         else{
-                            $filtered_row = array();
+                            $filtered_row = [];
                             foreach(explode(",", $cols) as $c_n){
                                 if(isset($row[$c_n])) $filtered_row[$c_n] = $row[$c_n];
                             }
-                            array_push($res_rows, $filtered_row);
+                            $res_rows[$row_idx] = $filtered_row;
                         }
                         
                         if($times) break;
@@ -163,69 +176,17 @@
 
                 }
             }
-
+            
             return $res_rows;
 
         }
 
-        private function array_diff_count(array $a, array $b): int{
+        // add columns temporary into table
+        private function add_column(string $table_name, array $columns){
 
-            $count = 0;
-
-            foreach($a as $k => $v){
-                if(isset($b[$k])){
-                    if($a[$k] !== $b[$k]) $count++;
-                }
-            }
-
-            return $count;
-
-        }
-
-    }
-
-    trait create{
-
-        // create and connect with a jsondb
-        public function create_db(string $db_name): bool{
-
-            if(is_file($db_name))
-            throw new \Error("'$db_name' jsondb already exists");
-
-            $json = "{}";
-            $res = file_put_contents($db_name, $json);
-
-            if($res){
-
-                $this->db_name = $db_name;
-                $this->db_data = array();
-
-                return true;
-
-            }else return false;
-
-        }
-
-        // create a table into jsondb
-        public function create_table(string $table_name, array $table_struct, bool $if_not_exists = false): bool{
-
-            $num_of_table = count($this->db_data) + 1;
-            if(!($num_of_table >= $this->db_limits["num_of_table"]["min"] && $num_of_table <= $this->db_limits["num_of_table"]["max"]))
-            throw new \Error("Number of tables are out of limits into '$this->db_name' jsondb");
-
-            if(isset($this->db_data[$table_name])){
-                if($if_not_exists) return true;
-                else throw new \Error("'$table_name' table already exists into '$this->db_name' jsondb");
-            }
-
-            if(!isset($table_struct["columns"]))
-            throw new \Error("'columns' is not set in '$table_name' table's structure");
-
-            $columns = $table_struct["columns"];
-
-            $num_of_cols = count($columns);
-            if(!($num_of_cols >= $this->db_limits["table_limits"]["cols"]["min"] && $num_of_cols <= $this->db_limits["table_limits"]["cols"]["max"]))
-            throw new \Error("Number of columns into '$table_name' table are out of limits into '$this->db_name' jsondb");
+            $exists_rows = $this->db_data[$table_name]["rows"];
+            $exists_columns = $this->db_data[$table_name]["structure"]["columns"];
+            $columns_name = array_keys($this->dr_uc_nnc_aic($table_name)["dummy_row"]);
 
             foreach($columns as $col_idx => $col){
 
@@ -246,6 +207,9 @@
                                 $col_name_len = strlen($col["name"]);
                                 if(!($col_name_len >= $this->db_limits["table_limits"]["col_name"]["min"] && $col_name_len <= $this->db_limits["table_limits"]["col_name"]["max"]))
                                 throw new \Error("Length of column name at index $col_idx into '$table_name' tables is out of limits");
+
+                                if(in_array($col["name"], $columns_name))
+                                throw new \Error("Duplicate '{$col["name"]}' column entry into '$table_name' table");
 
                             } break;
 
@@ -277,7 +241,10 @@
                                 if($datatype !== "boolean")
                                 throw new \Error("Datatype is invalid of value of '$property' property in $table_name' table's column at index $col_idx");
 
-                                if($col["unique"]) $col["not_null"] = true;
+                                if($col["unique"]){ 
+                                    $col["default"] = null;
+                                    $col["not_null"] = true;
+                                }
 
                             } break;
 
@@ -318,12 +285,121 @@
                 }
 
                 // rearrange a column
-                $rearranged_col = array();
-                foreach($this->column_properties as $property) $rearranged_col[$property] = $col[$property];
+                $rearranged_cols = [];
+                foreach($this->column_properties as $property) $rearranged_cols[$property] = $cols[$property];
 
-                $columns[$col_idx] = $rearranged_col;
+                $columns[$col_idx] = $rearranged_cols;
+
+                [ "name"=> $col_name, "default"=> $default_value ] = $rearranged_cols;
+
+                foreach($exists_rows as $row_idx => $row) $exists_rows[$row_idx][$col_name] = $default_value;
+
+                array_push($columns_name, $rearranged_cols["name"]);
 
             }
+
+            array_push($exists_columns, ...$columns);
+
+            $this->db_data[$table_name]["rows"] = $exists_rows;
+            $this->db_data[$table_name]["structure"]["columns"] = $exists_columns;
+
+        }
+
+        // remove columns from table
+        private function remove_column(string $table_name, array $columns){
+
+            $exists_columns_name = array_keys($this->dr_uc_nnc_aic($table_name)["dummy_row"]);
+            $exists_rows = $this->db_data[$table_name]["rows"];
+            $exists_columns = $this->db_data[$table_name]["structure"]["columns"];
+            $primary_key = $this->db_data[$table_name]["structure"]["primary_key"];
+
+            foreach($columns as $col_name){
+
+                $pos = array_search($col_name, $exists_columns_name);
+                if($pos > -1){
+
+                    if($col_name === $primary_key)
+                    throw new \Error("'$col_name' column is primary key, so it can not removed from '$table_name' table");
+
+                    unset($exists_columns[$pos]);
+
+                    foreach($exists_rows as $row_idx => $row){
+
+                        unset($exists_rows[$row_idx][$col_name]);
+
+                    }
+
+                }else throw new \Error("'$col_name' column does not exists into '$table_name' table");
+
+            }
+
+            $rearranged_cols = [];
+            foreach($exists_columns as $col) array_push($rearranged_cols, $col);
+
+            $rearranged_rows = [];
+            foreach($exists_rows as $row) array_push($rearranged_rows, $row);
+
+            $this->db_data[$table_name]["rows"] = $rearranged_rows;
+            $this->db_data[$table_name]["structure"]["columns"] = $rearranged_cols;
+
+        }
+
+    }
+
+    trait create{
+
+        // create and connect with a jsondb
+        public function create_db(string $db_name): int{
+
+            if(is_file($db_name))
+            throw new \Error("'$db_name' jsondb already exists");
+
+            $json = "{}";
+            $res = file_put_contents($db_name, $json);
+
+            if($res){
+
+                $this->db_name = $db_name;
+                $this->db_data = [];
+                $this->db_data_clone = $this->db_data;
+
+                return 1;
+
+            }else return 0;
+
+        }
+
+        // create a table into jsondb
+        public function create_table(string $table_name, array $table_struct, bool $if_not_exists = false): int{
+
+            if(isset($this->db_data[$table_name])){
+                if($if_not_exists) return 1;
+                else throw new \Error("'$table_name' table already exists into '$this->db_name' jsondb");
+            }
+
+            $num_of_table = count($this->db_data) + 1;
+            if(!($num_of_table >= $this->db_limits["num_of_table"]["min"] && $num_of_table <= $this->db_limits["num_of_table"]["max"]))
+            throw new \Error("Number of tables are out of limits into '$this->db_name' jsondb");
+
+            if(!isset($table_struct["columns"]))
+            throw new \Error("'columns' is not set in '$table_name' table's structure");
+
+            $columns = $table_struct["columns"];
+
+            $num_of_cols = count($columns);
+            if(!($num_of_cols >= $this->db_limits["table_limits"]["cols"]["min"] && $num_of_cols <= $this->db_limits["table_limits"]["cols"]["max"]))
+            throw new \Error("Number of columns into '$table_name' table are out of limits into '$this->db_name' jsondb");
+
+            // define blank table structure
+            $this->db_data[$table_name] = [
+                "rows"=> [],
+                "structure"=> [
+                    "columns"=> [],
+                    "primary_key"=> null
+                ]
+            ];
+
+            $this->add_column($table_name, $columns);
 
             // if primary key is set
             if(isset($table_struct["primary_key"])){
@@ -338,41 +414,28 @@
 
                     $cols = array_map(function($col){
                         return $col["name"];
-                    }, $columns);
+                    }, $this->db_data[$table_name]["structure"]["columns"]);
     
                     $pos = array_search($primary_key, $cols);
                     if($pos === false)
                     throw new \Error("Column '$primary_key' is not exists for primary_key in table '$table_name'");
     
-                    $columns[$pos]["default"] = null;
-                    $columns[$pos]["unique"] = true;
-                    $columns[$pos]["not_null"] = true;
+                    $this->db_data[$table_name]["structure"]["columns"][$pos]["default"] = null;
+                    $this->db_data[$table_name]["structure"]["columns"][$pos]["unique"] = true;
+                    $this->db_data[$table_name]["structure"]["columns"][$pos]["not_null"] = true;
 
                 }
+
+                $this->db_data[$table_name]["structure"]["primary_key"] = $primary_key;
                 
-            }else{
-                $primary_key = null;
             }
-
-            // create valid structure
-            $structure = array(
-                "columns" => $columns,
-                "primary_key" => $primary_key
-            );
-
-            $ary = array(
-                "rows" => array(),
-                "structure" => $structure
-            );
-
-            $this->db_data[$table_name] = $ary;
 
             return $this->write_into_db();
 
         }
 
         // create a row into a table, ($bulk === true) for insert multiple rows at a time 
-        public function insert_into(string $table_name, array $row, bool $bulk = false): bool{
+        public function insert_into(string $table_name, array $row, bool $bulk = false): int{
 
             if(!isset($this->db_data[$table_name]))
             throw new \Error("'$table_name' table does not exists in '$this->db_name' jsondb");
@@ -380,16 +443,6 @@
             $dr_uc_nnc_aic = $this->dr_uc_nnc_aic($table_name);
             $not_null_cols = $dr_uc_nnc_aic["not_null_cols"];
             $auto_increment_cols = $dr_uc_nnc_aic["auto_increment_cols"];
-
-            $diff = array_diff($not_null_cols, array_keys($row));
-            $diff = array_diff($diff, $auto_increment_cols);
-            $diff_size = count($diff);
-
-            // for not null column
-            if($diff_size !== 0){
-                $diff = implode(",", $diff); 
-                throw new \Error("Fill the value of not_null column ($diff) of '$table_name' table");
-            }
 
             $dummy_row = $dr_uc_nnc_aic["dummy_row"];
             $unique_cols = $dr_uc_nnc_aic["unique_cols"];
@@ -404,13 +457,30 @@
 
                 $rows = $row;
 
-            }else $rows = array( $row );
+            }else{
+                
+                if($this->check_datatype($row) !== "object")
+                throw new \Error("Datatype of 'row' paramter is not associative array for insert single row at a time into '$table_name' table");
+
+                $rows = array( $row );
+
+            }
 
             $size_of_rows = count($exists_rows) + count($rows);
             if(!($size_of_rows >= $this->db_limits["table_limits"]["rows"]["min"] && $size_of_rows <= $this->db_limits["table_limits"]["rows"]["max"]))
             throw new \Error("Number of rows into '$table_name' table are out of limits into '$this->db_name' jsondb");
 
             foreach($rows as $row_idx => $row){
+
+                $diff = array_diff($not_null_cols, array_keys($row));
+                $diff = array_diff($diff, $auto_increment_cols);
+                $diff_size = count($diff);
+
+                // for not null column
+                if($diff_size !== 0){
+                    $diff = implode(",", $diff); 
+                    throw new \Error("Fill the value of not_null column ($diff) of '$table_name' table at row index $row_idx");
+                }
 
                 foreach($row as $col_name => $value){
 
@@ -431,7 +501,7 @@
                         
                         if(in_array($col_name, $unique_cols)){
     
-                            $unique_values = array();
+                            $unique_values = [];
                             foreach($exists_rows as $er){
                                 array_push($unique_values, $er[$col_name]);
                             }
@@ -480,9 +550,11 @@
                 }
     
                 $row = $dummy_row;
-                array_push($this->db_data[$table_name]["rows"], $row);
+                array_push($exists_rows, $row);
 
             }
+
+            $this->db_data[$table_name]["rows"] = $exists_rows;
             
             return $this->write_into_db();
 
@@ -500,7 +572,7 @@
 
             $where_size = count($where);
             $exists_rows = $this->db_data[$table_name]["rows"];
-            $rows = array();
+            $rows = [];
 
             if($where_size === 0){
 
@@ -510,7 +582,7 @@
     
                     foreach($exists_rows as $row_idx => $row){
     
-                        $temp_row = array();
+                        $temp_row = [];
                         foreach(explode(",", $cols) as $col_name){
                             if(isset($row[$col_name])) $temp_row[$col_name] = $row[$col_name];
                         }
@@ -523,6 +595,11 @@
             }else if($where_size === 3){
 
                 $rows = $this->where($where, $table_name, $cols);
+
+                $rearranged_rows = [];
+                foreach($rows as $row) array_push($rearranged_rows, $row);
+
+                $rows = $rearranged_rows;
 
             }else throw new \Error("Size of where clause is not equal to 3 for '$table_name' table");
 
@@ -552,26 +629,32 @@
 
     trait update{
 
-        // update values 
-        public function update_table(string $table_name, array $sets, array $where = []): bool{
+        // update values of row with respect to column, sets is a collection of column names and their values
+        public function update_table(string $table_name, array $sets, array $where = []): int{
+
+            if(!isset($this->db_data[$table_name]))
+            throw new \Error("'$table_name' table does not exists in '$this->db_name' jsondb");
 
             $exists_rows = $this->db_data[$table_name]["rows"];
-            $rows = $this->select_from($table_name, "*", $where);
+            $rows = $this->where($where, $table_name, "*");
 
             // when table is empty
-            if(count($rows) === 0) return true;
+            if(count($rows) === 0) return 1;
 
             $dr_uc_nnc_aic = $this->dr_uc_nnc_aic($table_name);
             $unique_cols = $dr_uc_nnc_aic["unique_cols"];
             $not_null_cols = $dr_uc_nnc_aic["not_null_cols"];
             $auto_increment_cols = $dr_uc_nnc_aic["auto_increment_cols"];
 
+            $col_name_datatype = $this->get_col_name_with_dt($table_name);
+            $valid_columns = array_keys($col_name_datatype);
+
             foreach($sets as $col_name => $col_value){
 
-                if(!isset($rows[0][$col_name]))
+                if(!in_array($col_name, $valid_columns))
                 throw new \Error("'$col_name' column does not exists in '$table_name' table");
 
-                $datatype = $this->check_datatype($rows[0][$col_name]);
+                $datatype = $col_name_datatype[$col_name];
                 $val_datatype = $this->check_datatype($col_value);
 
                 if($col_value !== null && $datatype !== $val_datatype)
@@ -593,7 +676,7 @@
                     if(count($rows) !== 1)
                     throw new \Error("'$col_name' column is unique of '$table_name' table");
 
-                    $unique_value = array();
+                    $unique_value = [];
                     foreach($exists_rows as $r){
                         array_push($unique_value, $r[$col_name]);
                     }
@@ -612,19 +695,74 @@
 
             }
 
-            foreach($rows as $r){
-                foreach($exists_rows as $i => $er){
-
-                    $diff_count = $this->array_diff_count($er, $r);
-                    if($diff_count === count($sets)){
-                        $exists_rows[$i] = $r;
-                        break;
-                    }
-
-                }
+            foreach($rows as $row_idx => $r){
+                $exists_rows[$row_idx] = $r;
             }
 
             $this->db_data[$table_name]["rows"] = $exists_rows;
+            
+            return $this->write_into_db();
+
+        }
+
+        // alter table => add or remove column or columns
+        public function alter_table(string $table_name, string $operation, $col, bool $bulk = false): int{
+
+            if(!isset($this->db_data[$table_name]))
+            throw new \Error("'$table_name' table does not exists in '$this->db_name' jsondb");
+
+            switch($operation){
+                case "ADD COLUMN": {
+
+                    if($bulk){ 
+
+                        if($this->check_datatype($col) !== "array")
+                        throw new \Error("Datatype of 'col' paramter is not indexed array for add multiple columns at a time into '$table_name' table");
+        
+                        $columns = $col;
+        
+                    }else{
+                        
+                        if($this->check_datatype($col) !== "object")
+                        throw new \Error("Datatype of 'col' paramter is not associative array for add single column at a time into '$table_name' table");
+        
+                        $columns = array( $col );
+        
+                    }
+        
+                    $exists_columns = $this->db_data[$table_name]["structure"]["columns"];
+                    $num_of_cols = count($exists_columns) + count($columns);
+                    if(!($num_of_cols >= $this->db_limits["table_limits"]["cols"]["min"] && $num_of_cols <= $this->db_limits["table_limits"]["cols"]["max"]))
+                    throw new \Error("Number of columns into '$table_name' table are out of limits into '$this->db_name' jsondb");        
+                    
+                    $this->add_column($table_name, $columns);
+                    
+                } break;
+
+                case "DROP COLUMN": {
+
+                    if($bulk){ 
+
+                        if($this->check_datatype($col) !== "array")
+                        throw new \Error("Datatype of 'col' paramter is not indexed array for remove multiple columns at a time from '$table_name' table");
+        
+                        $columns = $col;
+        
+                    }else{
+                        
+                        if($this->check_datatype($col) !== "string")
+                        throw new \Error("Datatype of 'col' paramter is not string for remove single column at a time from '$table_name' table");
+        
+                        $columns = array( $col );
+        
+                    }
+                    
+                    $this->remove_column($table_name, $columns); 
+                    
+                } break;
+
+                default: throw new \Error("Invalid operation for alter a '$table_name' table");
+            }
 
             return $this->write_into_db();
 
@@ -634,28 +772,34 @@
 
     trait delete{
 
+        // delete the jsondb
+        public function drop_db(): int{
+
+            if(isset($this->db_name)){
+
+                unlink($this->db_name);
+                return 1;
+
+            }else return 0;
+
+        }
+
         // delete row/rows from table
-        public function delete_from(string $table_name, array $where = []): bool{
+        public function delete_from(string $table_name, array $where = []): int{
 
             if(count($where) === 0) return $this->truncate_table($table_name);
 
-            $rows = $this->select_from($table_name, "*", $where);
+            $rows = $this->where($where, $table_name, "*");
             
-            if(count($rows) === 0) return true;
+            if(count($rows) === 0) return 1;
             
             $exists_rows = $this->db_data[$table_name]["rows"];
             
-            foreach($exists_rows as $i => $er){
-                foreach($rows as $r){
-                    $diff = $this->array_diff_count($er, $r);
-                    if($diff === 0){
-                        unset($exists_rows[$i]);
-                        break;
-                    }
-                }
+            foreach($rows as $row_idx => $r){
+                unset($exists_rows[$row_idx]);
             }
             
-            $new_rows = array();
+            $new_rows = [];
             foreach($exists_rows as $er) array_push($new_rows, $er);
 
             $this->db_data[$table_name]["rows"] = $new_rows;
@@ -664,20 +808,8 @@
 
         }
 
-        // delete the jsondb
-        public function drop_db(): bool{
-
-            if(isset($this->db_name)){
-
-                unlink($this->db_name);
-                return true;
-
-            }else return false;
-
-        }
-
         // delete table from jsondb
-        public function drop_table(string $table_name): bool{
+        public function drop_table(string $table_name): int{
 
             if(!isset($this->db_data[$table_name]))
             throw new \Error("'$table_name' table does not exists in '$this->db_name' jsondb");
@@ -689,12 +821,12 @@
         }
 
         // delete all rows from table of jsondb
-        public function truncate_table(string $table_name): bool{
+        public function truncate_table(string $table_name): int{
 
             if(!isset($this->db_data[$table_name]))
             throw new \Error("'$table_name' table does not exists in '$this->db_name' jsondb");
 
-            $this->db_data[$table_name]["rows"] = array();
+            $this->db_data[$table_name]["rows"] = [];
 
             return $this->write_into_db();
 
@@ -705,24 +837,23 @@
 
         use private_task, create, read, update, delete;
 
-        private $db_name;
-        private $db_data;
-
-        private $valid_datatype = array( "string", "number", "boolean", "object", "array", "null" );
-        private $column_properties = array( "name", "datatype", "default", "unique", "not_null", "auto_increment" );
-        private $where_clause_operators = array( "=", ">", "<", ">=", "<=", "!=" );
-        private $db_limits = array(
-            "db_size" => array( "min"=> 2, "max"=> 10*1024*1024 ), // max = 10MB
-            "num_of_table"=> array( "min"=> 0, "max"=> 4 ),
-            "table_limits"=> array(
-                "rows"=> array( "min"=> 0, "max"=> 1024 ),
-                "cols"=> array( "min"=> 1, "max"=> 1024 ),
-                "col_name"=> array( "min"=> 1, "max"=> 32 ),
-            ),
-            "datatype"=> array(
-                "string"=> array( "min"=>0, "max"=> 2048 )
-            )
-        );
+        private
+        $db_name, $db_data, $db_data_clone,
+        $valid_datatype = [ "string", "number", "boolean", "object", "array", "null" ],
+        $column_properties = [ "name", "datatype", "default", "unique", "not_null", "auto_increment" ],
+        $where_clause_operators = [ "=", ">", "<", ">=", "<=", "!=" ],
+        $db_limits = [
+            "db_size" => [ "min"=> 2, "max"=> 10*1024*1024 ], // max = 10MB
+            "num_of_table"=> [ "min"=> 0, "max"=> 4 ],
+            "table_limits"=> [
+                "rows"=> [ "min"=> 0, "max"=> 1024 ],
+                "cols"=> [ "min"=> 1, "max"=> 1024 ],
+                "col_name"=> [ "min"=> 1, "max"=> 32 ],
+            ],
+            "datatype"=> [
+                "string"=> [ "min"=>0, "max"=> 2048 ]
+            ]
+        ];
 
         function __construct(string $db_name = ""){
 
@@ -747,6 +878,7 @@
 
                 $json = file_get_contents($db_name);
                 $this->db_data = json_decode($json, true);
+                $this->db_data_clone = $this->db_data;
 
             }else throw new \Error("'$db_name' jsondb does not exists");
 
