@@ -1,15 +1,7 @@
 <?php
 
-
-    /*!
-
-        JsonDB (JavaScript Object Notation DataBase)
-        @version 1
-
-        @author Chetan Saini, aka Mysterious Man
-
-    */
-
+    /*! JsonDB v1 | Developed by Chetan Saini */
+    
     declare(strict_types = 1);
 
     namespace chetansaini\JsonDB;
@@ -286,7 +278,7 @@
 
                 // rearrange a column
                 $rearranged_cols = [];
-                foreach($this->column_properties as $property) $rearranged_cols[$property] = $cols[$property];
+                foreach($this->column_properties as $property) $rearranged_cols[$property] = $col[$property];
 
                 $columns[$col_idx] = $rearranged_cols;
 
